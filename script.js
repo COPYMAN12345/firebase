@@ -1,4 +1,4 @@
-// ===== Firebase Configuration =====
+// Firebase Configuration
 const firebaseConfig = {
     apiKey: "AIzaSyAX8HA_J5nzCYanV6nowelPnhORArhJuGw",
     authDomain: "chat-and-video-call-v-1.firebaseapp.com",
@@ -15,285 +15,222 @@ firebase.initializeApp(firebaseConfig);
 const database = firebase.database();
 const auth = firebase.auth();
 
-// ===== DOM Elements =====
-const chatBox = document.getElementById('chatBox');
-const messageInput = document.getElementById('messageInput');
-const sendButton = document.getElementById('sendButton');
-const peerIdInput = document.getElementById('peerIdInput');
-const connectButton = document.getElementById('connectButton');
-const disconnectButton = document.getElementById('disconnectButton');
-const peerIdDisplay = document.getElementById('peerIdDisplay');
-const callButton = document.getElementById('callButton');
-const endCallButton = document.getElementById('endCallButton');
-const muteButton = document.getElementById('muteButton');
-const pauseVideoButton = document.getElementById('pauseVideoButton');
-const clearChatButton = document.getElementById('clearChatButton');
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
+// DOM Elements
+const elements = {
+    chatBox: document.getElementById('chatBox'),
+    messageInput: document.getElementById('messageInput'),
+    peerIdInput: document.getElementById('peerIdInput'),
+    localVideo: document.getElementById('localVideo'),
+    remoteVideo: document.getElementById('remoteVideo'),
+    peerIdDisplay: document.getElementById('peerIdDisplay')
+};
 
-// ===== Global Variables =====
-let peer;
-let conn;
-let username;
-let localStream;
-let currentCall;
-let isMuted = false;
-let isVideoPaused = false;
+// Initialize buttons
+const buttons = [
+    'sendButton', 'connectButton', 'disconnectButton',
+    'callButton', 'endCallButton', 'muteButton',
+    'pauseVideoButton', 'clearChatButton'
+].forEach(id => {
+    elements[id] = document.getElementById(id);
+});
 
-// ===== Initialize the Application =====
+// Global State
+const state = {
+    peer: null,
+    conn: null,
+    username: '',
+    localStream: null,
+    currentCall: null,
+    isMuted: false,
+    isVideoPaused: false
+};
+
+// Initialize App
 function initializeApp() {
-    // Sign in anonymously
     auth.signInAnonymously()
         .then(() => {
-            console.log("Signed in anonymously");
-            promptUserForDetails();
+            const username = prompt('Enter your name:') || 'Anonymous';
+            const peerId = prompt('Enter your Peer ID:') || `user-${Math.random().toString(36).substr(2, 8)}`;
+            
+            if (!username || !peerId) {
+                alert("Both name and peer ID are required");
+                return;
+            }
+            
+            state.username = username;
+            initializePeer(peerId);
         })
-        .catch((error) => {
-            console.error("Authentication error:", error);
-            alert("Failed to initialize authentication. Please refresh the page.");
+        .catch(error => {
+            console.error("Auth error:", error);
         });
 }
 
-function promptUserForDetails() {
-    username = prompt('Enter your name:') || 'Anonymous';
-    const peerId = prompt('Enter your Peer ID:') || `user-${Math.random().toString(36).substr(2, 8)}`;
-    
-    if (!username || !peerId) {
-        alert("Both name and peer ID are required. Please refresh the page.");
-        return;
-    }
-    
-    initializePeer(peerId);
-}
-
-// ===== PeerJS Initialization =====
-function initializePeer(customId) {
-    peer = new Peer(customId);
-
-    peer.on('open', (id) => {
-        peerIdDisplay.textContent = `Your Peer ID: ${id}`;
+// PeerJS Initialization
+function initializePeer(peerId) {
+    state.peer = new Peer(peerId, {
+        config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
     });
 
-    peer.on('error', (error) => {
+    state.peer.on('open', id => {
+        elements.peerIdDisplay.textContent = `Your Peer ID: ${id}`;
+    });
+
+    state.peer.on('error', error => {
         console.error('PeerJS error:', error);
-        alert('Connection error occurred. Please check console for details.');
     });
 
-    peer.on('connection', (connection) => {
-        conn = connection;
+    state.peer.on('call', async call => {
+        try {
+            if (!state.localStream) {
+                state.localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: true 
+                });
+                elements.localVideo.srcObject = state.localStream;
+            }
+            
+            call.answer(state.localStream);
+            
+            call.on('stream', remoteStream => {
+                elements.remoteVideo.srcObject = remoteStream;
+            });
+            
+            state.currentCall = call;
+        } catch (error) {
+            console.error("Call answer error:", error);
+        }
+    });
+
+    state.peer.on('connection', connection => {
+        state.conn = connection;
         setupConnectionListeners();
     });
 }
 
+// Connection Handlers
 function setupConnectionListeners() {
-    conn.on('open', () => {
-        appendMessage(`Connected to ${conn.peer}`, 'system');
-        loadChatHistory();
+    state.conn.on('open', () => {
+        appendMessage(`Connected to ${state.conn.peer}`, 'system');
     });
 
-    conn.on('data', (data) => {
-        appendMessage(`${data.username}: ${data.message}`, data.username === username ? 'local' : 'remote');
+    state.conn.on('data', data => {
+        appendMessage(`${data.username}: ${data.message}`, 'remote');
     });
 
-    conn.on('close', () => {
-        appendMessage('Connection closed', 'system');
-    });
-
-    conn.on('error', (error) => {
-        console.error('Connection error:', error);
-        appendMessage('Connection error', 'system');
+    state.conn.on('close', () => {
+        appendMessage('Disconnected', 'system');
+        endVideoCall();
     });
 }
 
-// ===== Video Call Functions =====
+// Video Call Functions
 async function startVideoCall() {
-    try {
-        if (!conn || !conn.open) {
-            alert('Not connected to any peer.');
-            return;
-        }
+    if (!state.conn) {
+        alert("Not connected to any peer");
+        return;
+    }
 
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
+    try {
+        state.localStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+        });
+        elements.localVideo.srcObject = state.localStream;
         
-        const call = peer.call(conn.peer, localStream);
-        call.on('stream', (remoteStream) => {
-            remoteVideo.srcObject = remoteStream;
+        const call = state.peer.call(state.conn.peer, state.localStream);
+        
+        call.on('stream', remoteStream => {
+            elements.remoteVideo.srcObject = remoteStream;
         });
         
-        call.on('close', endVideoCall);
-        currentCall = call;
+        state.currentCall = call;
     } catch (error) {
-        console.error("Failed to start call:", error);
-        alert("Failed to access camera/microphone. Please check permissions.");
+        console.error("Call failed:", error);
     }
 }
 
 function endVideoCall() {
-    if (currentCall) {
-        currentCall.close();
+    if (state.currentCall) {
+        state.currentCall.close();
     }
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localVideo.srcObject = null;
-        remoteVideo.srcObject = null;
+    if (state.localStream) {
+        state.localStream.getTracks().forEach(track => track.stop());
+        elements.localVideo.srcObject = null;
     }
-    currentCall = null;
-    localStream = null;
+    elements.remoteVideo.srcObject = null;
+    state.currentCall = null;
+    state.localStream = null;
 }
 
-function toggleMute() {
-    if (localStream) {
-        isMuted = !isMuted;
-        localStream.getAudioTracks().forEach(track => {
-            track.enabled = !isMuted;
-        });
-        muteButton.textContent = isMuted ? 'Unmute' : 'Mute';
-    }
-}
-
-function toggleVideo() {
-    if (localStream) {
-        isVideoPaused = !isVideoPaused;
-        localStream.getVideoTracks().forEach(track => {
-            track.enabled = !isVideoPaused;
-        });
-        pauseVideoButton.textContent = isVideoPaused ? 'Resume Video' : 'Pause Video';
-    }
-}
-
-// ===== Chat Functions =====
-function getChatId() {
-    if (!conn) return null;
-    const peers = [peer.id, conn.peer].sort();
-    return peers.join('_');
-}
-
+// Chat Functions
 function appendMessage(message, type) {
     const messageElement = document.createElement('div');
     messageElement.className = `message ${type}`;
-    
-    // Format message with username styling
-    const colonIndex = message.indexOf(':');
-    if (colonIndex > -1) {
-        const usernamePart = message.substring(0, colonIndex + 1);
-        const messagePart = message.substring(colonIndex + 1);
-        
-        const usernameSpan = document.createElement('span');
-        usernameSpan.className = 'username';
-        usernameSpan.textContent = usernamePart;
-        
-        const messageSpan = document.createElement('span');
-        messageSpan.textContent = messagePart;
-        
-        messageElement.appendChild(usernameSpan);
-        messageElement.appendChild(messageSpan);
-    } else {
-        messageElement.textContent = message;
-    }
-    
-    chatBox.appendChild(messageElement);
-    chatBox.scrollTop = chatBox.scrollHeight;
-
-    if (type !== 'system' && conn) {
-        saveMessageToFirebase(message, type);
-    }
+    messageElement.textContent = message;
+    elements.chatBox.appendChild(messageElement);
+    elements.chatBox.scrollTop = elements.chatBox.scrollHeight;
 }
 
-function saveMessageToFirebase(message, type) {
-    const chatRef = database.ref(`chats/${getChatId()}`);
-    const messageData = {
-        username: type === 'local' ? username : conn.peer,
-        message: message.split(': ')[1] || message,
-        timestamp: firebase.database.ServerValue.TIMESTAMP,
-        type: type
-    };
+function sendMessage() {
+    const message = elements.messageInput.value.trim();
+    if (!message || !state.conn) return;
     
-    chatRef.push(messageData)
-        .catch(error => {
-            console.error("Failed to save message:", error);
-        });
-}
-
-function loadChatHistory() {
-    const chatId = getChatId();
-    if (!chatId) return;
-
-    const chatRef = database.ref(`chats/${chatId}`).orderByChild('timestamp');
-    
-    chatRef.on('value', (snapshot) => {
-        chatBox.innerHTML = '';
-        snapshot.forEach((childSnapshot) => {
-            const { username, message, type } = childSnapshot.val();
-            appendMessage(`${username}: ${message}`, type);
-        });
-    }, (error) => {
-        console.error("Failed to load chat history:", error);
+    state.conn.send({ 
+        username: state.username, 
+        message: message 
     });
+    appendMessage(`${state.username}: ${message}`, 'local');
+    elements.messageInput.value = '';
 }
 
-function clearChat() {
-    chatBox.innerHTML = '';
-}
-
-// ===== Event Listeners =====
-connectButton.addEventListener('click', () => {
-    const peerId = peerIdInput.value.trim();
-    if (!peerId) {
-        alert('Please enter a Peer ID!');
-        return;
-    }
+// Event Listeners
+elements.connectButton.addEventListener('click', () => {
+    const peerId = elements.peerIdInput.value.trim();
+    if (!peerId || peerId === state.peer?.id) return;
     
-    if (peerId === peer.id) {
-        alert("You can't connect to yourself!");
-        return;
-    }
-    
-    conn = peer.connect(peerId);
+    state.conn = state.peer.connect(peerId);
     setupConnectionListeners();
 });
 
-sendButton.addEventListener('click', sendMessage);
-messageInput.addEventListener('keypress', (e) => {
+elements.sendButton.addEventListener('click', sendMessage);
+elements.messageInput.addEventListener('keypress', e => {
     if (e.key === 'Enter') sendMessage();
 });
 
-function sendMessage() {
-    const message = messageInput.value.trim();
-    if (!message) {
-        alert("Message can't be empty!");
-        return;
-    }
-    
-    if (!conn || !conn.open) {
-        alert("Not connected to any peer!");
-        return;
-    }
-    
-    try {
-        conn.send({ username, message });
-        appendMessage(`${username}: ${message}`, 'local');
-        messageInput.value = '';
-    } catch (error) {
-        console.error("Failed to send message:", error);
-        alert("Failed to send message. Please check connection.");
-    }
-}
+elements.callButton.addEventListener('click', startVideoCall);
+elements.endCallButton.addEventListener('click', endVideoCall);
 
-disconnectButton.addEventListener('click', () => {
-    if (conn) {
-        conn.close();
-        conn = null;
-        appendMessage('Disconnected', 'system');
+elements.muteButton.addEventListener('click', () => {
+    if (state.localStream) {
+        state.isMuted = !state.isMuted;
+        state.localStream.getAudioTracks().forEach(track => {
+            track.enabled = !state.isMuted;
+        });
+        elements.muteButton.textContent = state.isMuted ? 'Unmute' : 'Mute';
+    }
+});
+
+elements.pauseVideoButton.addEventListener('click', () => {
+    if (state.localStream) {
+        state.isVideoPaused = !state.isVideoPaused;
+        state.localStream.getVideoTracks().forEach(track => {
+            track.enabled = !state.isVideoPaused;
+        });
+        elements.pauseVideoButton.textContent = state.isVideoPaused ? 'Resume Video' : 'Pause Video';
+    }
+});
+
+elements.clearChatButton.addEventListener('click', () => {
+    elements.chatBox.innerHTML = '';
+});
+
+elements.disconnectButton.addEventListener('click', () => {
+    if (state.conn) {
+        state.conn.close();
+        state.conn = null;
     }
     endVideoCall();
 });
-
-clearChatButton.addEventListener('click', clearChat);
-callButton.addEventListener('click', startVideoCall);
-endCallButton.addEventListener('click', endVideoCall);
-muteButton.addEventListener('click', toggleMute);
-pauseVideoButton.addEventListener('click', toggleVideo);
 
 // Start the application
 initializeApp();
